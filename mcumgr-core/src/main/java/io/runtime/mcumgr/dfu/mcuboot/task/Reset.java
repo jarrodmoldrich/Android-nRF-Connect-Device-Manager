@@ -1,7 +1,12 @@
-package io.runtime.mcumgr.dfu.mcuboot.task;
+/*
+ * Copyright (c) 2017-2018 Runtime Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by Jarrod Moldrich, 2026
+ */
 
-import android.os.Handler;
-import android.os.SystemClock;
+package io.runtime.mcumgr.dfu.mcuboot.task;
 
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
@@ -19,14 +24,6 @@ import io.runtime.mcumgr.task.TaskManager;
 
 class Reset extends FirmwareUpgradeTask {
 	private final static Logger LOG = LoggerFactory.getLogger(Reset.class);
-
-	/**
-	 * The timestamp at which the response to Reset command was received.
-	 * Assuming that the target device has reset just after sending this response,
-	 * the time difference between this moment and receiving disconnection event may be deducted
-	 * from the estimated swap time.
-	 */
-	private long mResetResponseTime;
 
 	private final boolean mNoSwap;
 
@@ -47,44 +44,38 @@ class Reset extends FirmwareUpgradeTask {
 
 	@Override
 	public void start(@NotNull final TaskManager<Settings, State> performer) {
-		final Settings settings = performer.getSettings();
 		final McuMgrTransport transport = performer.getTransport();
 
 		transport.addObserver(new McuMgrTransport.ConnectionObserver() {
+			private boolean disconnected = false;
+
 			@Override
 			public void onConnected() {
-				// Do nothing
+				// When BLE is managed externally, wait for reconnection before completing.
+				// This is signaled via didReconnect() which calls notifyConnected().
+				if (disconnected) {
+					LOG.info("Device reconnected after reset");
+					transport.removeObserver(this);
+					performer.onTaskCompleted(Reset.this);
+				}
 			}
 
 			@Override
 			public void onDisconnected() {
 				LOG.info("Device disconnected");
+				disconnected = true;
 
-				transport.removeObserver(this);
-
-				// If there is no swap, we're done. No need to wait anything.
+				// If there is no swap, we're done. No need to wait for reconnection.
 				if (mNoSwap) {
+					transport.removeObserver(this);
 					performer.onTaskCompleted(Reset.this);
 					return;
 				}
 
-				// Calculate the delay need that we need to wait until the swap is complete.
-				long now = SystemClock.elapsedRealtime();
-				if (mResetResponseTime == 0) {
-					// In case the response to Reset command wasn't received before the disconnection
-					// start counting remaining time from now.
-					mResetResponseTime = now;
-				}
-				long timeSinceReset = now - mResetResponseTime;
-				long remainingTime = settings.estimatedSwapTime - timeSinceReset;
-				final Runnable complete = () -> performer.onTaskCompleted(Reset.this);
-
-				if (remainingTime > 0) {
-					LOG.trace("Waiting remaining {} ms for the swap operation to complete", remainingTime);
-					new Handler().postDelayed(complete, remainingTime);
-				} else {
-					complete.run();
-				}
+				// For externally managed BLE, we wait for onConnected() to be called
+				// when the external BLE manager reconnects and calls didReconnect().
+				// The swap time waiting is handled by the external BLE manager.
+				LOG.trace("Waiting for external BLE manager to reconnect...");
 			}
 		});
 
@@ -97,7 +88,6 @@ class Reset extends FirmwareUpgradeTask {
 					performer.onTaskFailed(Reset.this, new McuMgrErrorException(response.getReturnCode()));
 					return;
 				}
-				mResetResponseTime = SystemClock.elapsedRealtime();
 				LOG.trace("Reset request success. Waiting for disconnect...");
 			}
 
