@@ -10,8 +10,6 @@ package io.runtime.mcumgr.ble;
 
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGatt;
-import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattService;
 import android.os.Build;
 import android.os.Handler;
@@ -53,14 +51,18 @@ import io.runtime.mcumgr.util.CBOR;
  * and characteristic setup (including enabling notifications) are managed externally. The
  * {@link BluetoothGatt}, SMP characteristic, and negotiated MTU must be provided in the constructor.
  * <p>
- * Call {@link #didDisconnect()} when the connection is lost, and
- * {@link #didReconnect(BluetoothGatt, BluetoothGattCharacteristic, int)} after reconnection to
- * resume operations. Forward SMP characteristic notifications via {@link #handleNotification(byte[])}.
+ * Call {@link #didDisconnect()} when the connection is lost, and * {@link #didReconnect(int)} after
+ * reconnection to resume operations. Forward SMP characteristic notifications via
+ * {@link #handleNotification(byte[])}.
  */
 @SuppressWarnings("unused")
 public class McuMgrBleTransport implements McuMgrTransport {
 
     private static final Logger LOG = LoggerFactory.getLogger(McuMgrBleTransport.class);
+
+    public interface SmpWriteCallback {
+        void writeNoResponse(byte[] data);
+    }
 
     /**
      * The SMP service UUID.
@@ -70,34 +72,10 @@ public class McuMgrBleTransport implements McuMgrTransport {
     @Deprecated
     public final static UUID SMP_SERVICE_UUID = DefaultMcuMgrUuidConfig.SMP_SERVICE_UUID;
 
-    // Use a separate characteristic object for writes vs notifications.
-    //
-    // We must clone the characteristic object in order to ensure no race
-    // conditions with BluetoothGattCharacteristic's getValue() function when
-    // asynchronously writing to and receiving notifications from the same
-    // characteristic.
-    //
-    // Me must write to the clone and receive from the original in order to
-    // ensure that the OS selects the correct characteristic object from the
-    // service's list.
-    //
-    // More info:
-    // https://stackoverflow.com/questions/38922639/how-could-i-achieve-maximum-thread-safety-with-a-read-write-ble-gatt-characteris
-
-    /**
-     * The BluetoothGatt connection provided by the external BLE manager.
-     */
-    private BluetoothGatt mGatt;
-
     /**
      * Simple Management Protocol write characteristic.
      */
-    private BluetoothGattCharacteristic mSmpCharacteristicWrite;
-
-    /**
-     * The Bluetooth device for this transporter.
-     */
-    private final BluetoothDevice mDevice;
+    private SmpWriteCallback mSmpCharacteristicWrite;
 
     /**
      * The chunk size for splitting large payloads (MTU - 3 for ATT header).
@@ -143,11 +121,8 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param smpCharacteristic the SMP characteristic from service discovery.
      * @param mtu the negotiated MTU size from the external BLE connection.
      */
-    public McuMgrBleTransport(@NonNull BluetoothDevice device,
-                              @NonNull BluetoothGatt gatt,
-                              @NonNull BluetoothGattCharacteristic smpCharacteristic,
-                              int mtu) {
-        this(device, gatt, smpCharacteristic, mtu, new Handler(Looper.getMainLooper()));
+    public McuMgrBleTransport(@NonNull SmpWriteCallback smpCharacteristic, int mtu) {
+        this(smpCharacteristic, mtu, new Handler(Looper.getMainLooper()));
     }
 
     /**
@@ -159,14 +134,11 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param mtu the negotiated MTU size from the external BLE connection.
      * @param handler the handler to run {@link McuMgrCallback}s on.
      */
-    public McuMgrBleTransport(@NonNull BluetoothDevice device,
-                              @NonNull BluetoothGatt gatt,
-                              @NonNull BluetoothGattCharacteristic smpCharacteristic,
+    public McuMgrBleTransport(@NonNull SmpWriteCallback smpCharacteristic,
                               int mtu,
                               @NonNull Handler handler) {
-        mDevice = device;
         mHandler = handler;
-        initializeGatt(gatt, smpCharacteristic, mtu);
+        initializeGatt(mtu);
     }
 
     //*******************************************************************************************
@@ -312,9 +284,8 @@ public class McuMgrBleTransport implements McuMgrTransport {
             public void send(@NonNull byte[] data) {
                 // Check if disconnected - gatt/characteristic may be null if didDisconnect() was called
                 // while this transaction was pending in the protocol session.
-                final BluetoothGatt gatt = mGatt;
-                final BluetoothGattCharacteristic characteristic = mSmpCharacteristicWrite;
-                if (gatt == null || characteristic == null) {
+                final SmpWriteCallback characteristic = mSmpCharacteristicWrite;
+                if (characteristic == null) {
                     log(Log.WARN, "Write aborted - disconnected");
                     return;
                 }
@@ -330,7 +301,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
                 }
 
                 // Write data, splitting into chunks if needed
-                writeWithSplitting(gatt, characteristic, payload);
+                writeWithSplitting(characteristic, payload);
             }
 
             @Override
@@ -375,11 +346,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param smpCharacteristic The SMP characteristic from service discovery.
      * @param mtu The negotiated MTU size.
      */
-    private void initializeGatt(@NonNull BluetoothGatt gatt,
-                                @NonNull BluetoothGattCharacteristic smpCharacteristic,
-                                int mtu) {
-        mGatt = gatt;
-        mSmpCharacteristicWrite = cloneCharacteristic(smpCharacteristic);
+    private void initializeGatt(int mtu) {
         mChunkSize = mtu - 3; // 3 bytes for ATT header
         mMaxPacketLength = Math.max(mChunkSize, mMaxPacketLength);
         mSmpProtocol = new SmpProtocolSession(mHandler);
@@ -428,7 +395,6 @@ public class McuMgrBleTransport implements McuMgrTransport {
         }
 
         // Clear gatt and characteristics after closing the session
-        mGatt = null;
         mSmpCharacteristicWrite = null;
         mChunkSize = 0;
         mMaxPacketLength = 0;
@@ -444,11 +410,9 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param smpCharacteristic The SMP characteristic from service discovery.
      * @param mtu The negotiated MTU size.
      */
-    public void didReconnect(@NonNull BluetoothGatt gatt,
-                             @NonNull BluetoothGattCharacteristic smpCharacteristic,
-                             int mtu) {
+    public void didReconnect(int mtu) {
         log(Log.INFO, "didReconnect() - reinitializing protocol session");
-        initializeGatt(gatt, smpCharacteristic, mtu);
+        initializeGatt(mtu);
         notifyConnected();
     }
 
@@ -470,8 +434,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param data The data to write.
      */
     @SuppressLint("MissingPermission")
-    private void writeWithSplitting(@NonNull BluetoothGatt gatt,
-                                    @NonNull BluetoothGattCharacteristic characteristic,
+    private void writeWithSplitting(@NonNull SmpWriteCallback characteristic,
                                     @NonNull byte[] data) {
         final int chunkSize = mChunkSize;
         if (chunkSize <= 0) {
@@ -483,16 +446,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
         while (offset < data.length) {
             final int end = Math.min(offset + chunkSize, data.length);
             final byte[] chunk = Arrays.copyOfRange(data, offset, end);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(characteristic, chunk,
-                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-            } else {
-                characteristic.setValue(chunk);
-                characteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-                gatt.writeCharacteristic(characteristic);
-            }
-
+            characteristic.writeNoResponse(chunk);
             offset = end;
         }
     }
@@ -523,44 +477,5 @@ public class McuMgrBleTransport implements McuMgrTransport {
         for (ConnectionObserver o : mConnectionObservers) {
             o.onDisconnected();
         }
-    }
-
-    //*******************************************************************************************
-    // Characteristic cloning for thread safety on older Android versions.
-    // See: https://stackoverflow.com/questions/38922639/
-    //*******************************************************************************************
-
-    @NonNull
-    @SuppressLint("DiscouragedPrivateApi")
-    private static BluetoothGattCharacteristic cloneCharacteristic(@NonNull BluetoothGattCharacteristic characteristic) {
-        BluetoothGattCharacteristic clone;
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.O) {
-            // On older versions of android we have to use reflection in order
-            // to set the instance ID and the service.
-            clone = new BluetoothGattCharacteristic(
-                    characteristic.getUuid(),
-                    characteristic.getProperties(),
-                    characteristic.getPermissions());
-            try {
-                Method initCharacteristic = characteristic.getClass()
-                        .getDeclaredMethod("initCharacteristic", BluetoothGattService.class, UUID.class, int.class, int.class, int.class);
-                initCharacteristic.setAccessible(true);
-                initCharacteristic.invoke(clone,
-                        characteristic.getService(),
-                        characteristic.getUuid(),
-                        characteristic.getInstanceId(),
-                        characteristic.getProperties(),
-                        characteristic.getPermissions()
-                );
-            } catch (Exception e) {
-                LOG.error("SMP characteristic clone failed", e);
-                clone = characteristic;
-            }
-        } else {
-            // Newer versions of android have this bug fixed as long as a
-            // handler is used in connectGatt().
-            clone = characteristic;
-        }
-        return clone;
     }
 }

@@ -10,7 +10,9 @@ Edit `fork.config` and set your details:
 ```properties
 GITHUB_USER=your-github-username
 MAVEN_GROUP_ID=io.github.your-github-username
-DEVELOPER_NAME=Your Name
+VERSION=2.7.4-KMS-rev5
+DEVELOPER_NAME="Your Name"
+DEVELOPER_EMAIL="your@email.com"
 ```
 
 ### 2. Register Maven Central Namespace
@@ -47,7 +49,6 @@ cp publishing.properties.template publishing.properties
 
 Edit `publishing.properties`:
 ```properties
-VERSION=2.7.4-KMS-rev5
 mavenCentralUsername=AbCd1234  # From your User Token
 mavenCentralPassword=your-token-password
 signing.gnupg.keyName=YOUR_GPG_KEY_ID
@@ -95,14 +96,14 @@ dependencies {
 
 ## Updating the Version
 
-1. Edit `publishing.properties` and change `VERSION`
+1. Edit `fork.config` and change `VERSION`
 2. Run `./create-bundle.sh`
 3. Upload the new bundle
 
 ## File Reference
 
-- **fork.config** - Your fork's identity: GitHub user, Maven namespace (committed to git)
-- **publishing.properties** - Version number and Maven Central credentials (gitignored, never commit)
+- **fork.config** - Your fork's identity: GitHub user, Maven namespace, version (committed to git)
+- **publishing.properties** - Maven Central credentials and GPG key (gitignored, never commit)
 - **create-bundle.sh** - Builds and bundles for Maven Central upload
 
 ## Troubleshooting
