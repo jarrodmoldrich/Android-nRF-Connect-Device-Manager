@@ -11,24 +11,25 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.nordic.library)
     alias(libs.plugins.nordic.kotlin.android)
-    alias(libs.plugins.nordic.nexus.android)
+    `maven-publish`
+    signing
 }
 
-group = "no.nordicsemi.android"
+// Get fork configuration from root project
+val githubUser: String by rootProject.extra
+val mavenGroupId: String by rootProject.extra
 
-nordicNexusPublishing {
-    POM_ARTIFACT_ID = "mcumgr-ble"
-    POM_NAME = "Mcu Manager BLE Transport"
-
-    POM_DESCRIPTION = "A Bluetooth LE transport implementation for the Mcu Manager library."
-    POM_URL = "https://github.com/NordicSemiconductor/Android-nRF-Connect-Device-Manager.git"
-    POM_SCM_URL = "https://github.com/NordicSemiconductor/Android-nRF-Connect-Device-Manager.git"
-    POM_SCM_CONNECTION = "scm:git@github.com:NordicSemiconductor/Android-nRF-Connect-Device-Manager.git"
-    POM_SCM_DEV_CONNECTION = "scm:git@github.com:NordicSemiconductor/Android-nRF-Connect-Device-Manager.git"
-}
+group = mavenGroupId
 
 android {
     namespace = "io.runtime.mcumgr.ble"
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
 
     compileOptions {
         // for now and foreseeable future we intentionally set the build system to emit bytecode that is compatible with
@@ -63,4 +64,67 @@ dependencies {
 
     // Test
     testImplementation(libs.kotlin.test)
+}
+
+// Maven Central Publishing Configuration
+val mavenCentralUsername: String? by project
+val mavenCentralPassword: String? by project
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                from(components["release"])
+
+                groupId = project.group.toString()
+                artifactId = "mcumgr-ble"
+                version = project.version.toString()
+
+                pom {
+                    name.set("McuManager BLE Transport")
+                    description.set("A Bluetooth LE transport implementation for the Mcu Manager library.")
+                    url.set("https://github.com/$githubUser/Android-nRF-Connect-Device-Manager")
+
+                    licenses {
+                        license {
+                            name.set("The Apache License, Version 2.0")
+                            url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+                        }
+                    }
+
+                    developers {
+                        developer {
+                            id.set(githubUser)
+                            name.set(githubUser)
+                            url.set("https://github.com/$githubUser")
+                        }
+                    }
+
+                    scm {
+                        connection.set("scm:git:git://github.com/$githubUser/Android-nRF-Connect-Device-Manager.git")
+                        developerConnection.set("scm:git:ssh://github.com/$githubUser/Android-nRF-Connect-Device-Manager.git")
+                        url.set("https://github.com/$githubUser/Android-nRF-Connect-Device-Manager")
+                    }
+                }
+            }
+        }
+
+        repositories {
+            maven {
+                name = "MavenCentral"
+                // Use OSSRH staging which works with Central Portal accounts
+                url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+                credentials {
+                    username = mavenCentralUsername
+                    password = mavenCentralPassword
+                }
+            }
+        }
+    }
+
+    signing {
+        // Use GPG command (works with GPG agent)
+        useGpgCmd()
+        sign(publishing.publications["release"])
+    }
 }

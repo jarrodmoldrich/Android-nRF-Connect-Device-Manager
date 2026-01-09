@@ -1,0 +1,10 @@
+# Maven Central Publishing Configuration
+# This file contains project-specific credentials for publishing
+# DO NOT commit this file to git - it's in .gitignore
+
+# Maven Central credentials from https://central.sonatype.com/
+mavenCentralUsername=YOUR_SONATYPE_USERNAME
+mavenCentralPassword=YOUR_SONATYPE_TOKEN
+
+# GPG signing configuration
+signing.gnupg.keyName=LAST_8_CHARS_OF_YOUR_KEY_ID
