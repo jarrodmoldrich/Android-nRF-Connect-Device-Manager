@@ -137,6 +137,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
     public McuMgrBleTransport(@NonNull SmpWriteCallback smpCharacteristic,
                               int mtu,
                               @NonNull Handler handler) {
+        mSmpCharacteristicWrite = smpCharacteristic;
         mHandler = handler;
         initializeGatt(mtu);
     }
@@ -406,8 +407,6 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * Called by external BLE manager after reconnection and service discovery.
      * This re-initializes the SMP protocol session for new operations.
      *
-     * @param gatt The BluetoothGatt connection.
-     * @param smpCharacteristic The SMP characteristic from service discovery.
      * @param mtu The negotiated MTU size.
      */
     public void didReconnect(int mtu) {
