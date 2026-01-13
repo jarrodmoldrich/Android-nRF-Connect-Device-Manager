@@ -407,6 +407,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
     public void didReconnect(SmpWriteCallback writeCallback, int mtu) {
         log(Log.INFO, "didReconnect() - reinitializing protocol session");
         mSmpCharacteristicWrite = writeCallback;
+        mSmpProtocol = new SmpProtocolSession(mHandler);
         setMtu(mtu);
         log(Log.INFO, "SMP transport reconnected with MTU: " + mtu + ", chunk size: " + mChunkSize);
         notifyConnected();
