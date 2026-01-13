@@ -45,7 +45,7 @@ import io.runtime.mcumgr.util.CBOR;
  * <p>
  * <b>External BLE Management:</b> This transport assumes that BLE connection, service discovery,
  * and characteristic setup (including enabling notifications) are managed externally. The
- * {@link BluetoothGatt}, SMP characteristic, and negotiated MTU must be provided in the constructor.
+ * {@link BluetoothGatt}, SMP write callback, and negotiated MTU must be provided in the constructor.
  * <p>
  * Call {@link #didDisconnect()} when the connection is lost, and * {@link #didReconnect(int)} after
  * reconnection to resume operations. Forward SMP characteristic notifications via
@@ -69,7 +69,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
     public final static UUID SMP_SERVICE_UUID = DefaultMcuMgrUuidConfig.SMP_SERVICE_UUID;
 
     /**
-     * Simple Management Protocol write characteristic.
+     * Simple Management Protocol write callback.
      */
     private SmpWriteCallback mSmpCharacteristicWrite;
 
@@ -112,28 +112,24 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * <p>
      * Uses the main thread for callbacks.
      *
-     * @param device the device to connect to and communicate with.
-     * @param gatt the BluetoothGatt connection from the external BLE manager.
-     * @param smpCharacteristic the SMP characteristic from service discovery.
+     * @param writeCallback the SMP write callback from service discovery.
      * @param mtu the negotiated MTU size from the external BLE connection.
      */
-    public McuMgrBleTransport(@NonNull SmpWriteCallback smpCharacteristic, int mtu) {
-        this(smpCharacteristic, mtu, new Handler(Looper.getMainLooper()));
+    public McuMgrBleTransport(@NonNull SmpWriteCallback writeCallback, int mtu) {
+        this(writeCallback, mtu, new Handler(Looper.getMainLooper()));
     }
 
     /**
      * Construct a McuMgrBleTransport object with a handler for asynchronous callbacks.
      *
-     * @param device the device to connect to and communicate with.
-     * @param gatt the BluetoothGatt connection from the external BLE manager.
-     * @param smpCharacteristic the SMP characteristic from service discovery.
+     * @param writeCallback the SMP write callback from service discovery.
      * @param mtu the negotiated MTU size from the external BLE connection.
      * @param handler the handler to run {@link McuMgrCallback}s on.
      */
-    public McuMgrBleTransport(@NonNull SmpWriteCallback smpCharacteristic,
+    public McuMgrBleTransport(@NonNull SmpWriteCallback writeCallback,
                               int mtu,
                               @NonNull Handler handler) {
-        mSmpCharacteristicWrite = smpCharacteristic;
+        mSmpCharacteristicWrite = writeCallback;
         mHandler = handler;
         initializeGatt(mtu);
     }
@@ -279,10 +275,10 @@ public class McuMgrBleTransport implements McuMgrTransport {
         session.send(payload, timeout, new SmpTransaction() {
             @Override
             public void send(@NonNull byte[] data) {
-                // Check if disconnected - gatt/characteristic may be null if didDisconnect() was called
+                // Check if disconnected - write callback will be null if didDisconnect() was called
                 // while this transaction was pending in the protocol session.
-                final SmpWriteCallback characteristic = mSmpCharacteristicWrite;
-                if (characteristic == null) {
+                final SmpWriteCallback writeCallback = mSmpCharacteristicWrite;
+                if (writeCallback == null) {
                     log(Log.WARN, "Write aborted - disconnected");
                     return;
                 }
@@ -298,7 +294,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
                 }
 
                 // Write data, splitting into chunks if needed
-                writeWithSplitting(characteristic, payload);
+                writeWithSplitting(writeCallback, payload);
             }
 
             @Override
@@ -330,17 +326,15 @@ public class McuMgrBleTransport implements McuMgrTransport {
 
     @Override
     public void connect(@Nullable final ConnectionCallback callback) {
-        // Connection is managed externally. SMP characteristic is always set in constructor.
+        // Connection is managed externally. SMP write callback is always set in constructor.
         if (callback != null) {
             callback.onConnected();
         }
     }
 
     /**
-     * Initializes the GATT connection, SMP characteristic and protocol session.
+     * Initializes the GATT connection, SMP write callback and protocol session.
      *
-     * @param gatt The BluetoothGatt connection.
-     * @param smpCharacteristic The SMP characteristic from service discovery.
      * @param mtu The negotiated MTU size.
      */
     private void initializeGatt(int mtu) {
@@ -355,9 +349,9 @@ public class McuMgrBleTransport implements McuMgrTransport {
     }
 
     /**
-     * Called by external BLE manager to forward SMP characteristic notifications.
+     * Called by external BLE manager to forward SMP write callback notifications.
      * The external BLE manager should call this when it receives a notification
-     * on the SMP characteristic.
+     * on the SMP write callback.
      *
      * @param data The notification data.
      */
@@ -387,7 +381,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
         log(Log.INFO, "didDisconnect() - cancelling all pending operations");
 
         // Close the protocol session first to fail all pending transactions.
-        // This must happen before nulling gatt/characteristics to prevent race conditions
+        // This must happen before nulling write callback to prevent race conditions
         // where a transaction's send() callback accesses null references.
         final SmpProtocolSession session = mSmpProtocol;
         mSmpProtocol = null;
@@ -395,7 +389,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
             session.close(new McuMgrDisconnectedException());
         }
 
-        // Clear gatt and characteristics after closing the session
+        // Clear gatt and write callback after closing the session
         mSmpCharacteristicWrite = null;
         mChunkSize = 0;
         mMaxPacketLength = 0;
@@ -407,10 +401,12 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * Called by external BLE manager after reconnection and service discovery.
      * This re-initializes the SMP protocol session for new operations.
      *
+     * @param writeCallback The SMP write callback.
      * @param mtu The negotiated MTU size.
      */
-    public void didReconnect(int mtu) {
+    public void didReconnect(SmpWriteCallback writeCallback, int mtu) {
         log(Log.INFO, "didReconnect() - reinitializing protocol session");
+        mSmpCharacteristicWrite = writeCallback;
         setMtu(mtu);
         log(Log.INFO, "SMP transport reconnected with MTU: " + mtu + ", chunk size: " + mChunkSize);
         notifyConnected();
@@ -427,14 +423,13 @@ public class McuMgrBleTransport implements McuMgrTransport {
     //*******************************************************************************************
 
     /**
-     * Writes data to the characteristic, splitting into chunks if the payload exceeds the chunk size.
+     * Writes data to the write callback splitting into chunks if the payload exceeds the chunk size.
      *
-     * @param gatt The BluetoothGatt connection.
-     * @param characteristic The characteristic to write to.
+     * @param writeCallback The write callback to write to.
      * @param data The data to write.
      */
     @SuppressLint("MissingPermission")
-    private void writeWithSplitting(@NonNull SmpWriteCallback characteristic,
+    private void writeWithSplitting(@NonNull SmpWriteCallback writeCallback,
                                     @NonNull byte[] data) {
         final int chunkSize = mChunkSize;
         if (chunkSize <= 0) {
@@ -446,7 +441,7 @@ public class McuMgrBleTransport implements McuMgrTransport {
         while (offset < data.length) {
             final int end = Math.min(offset + chunkSize, data.length);
             final byte[] chunk = Arrays.copyOfRange(data, offset, end);
-            characteristic.writeNoResponse(chunk);
+            writeCallback.writeNoResponse(chunk);
             offset = end;
         }
     }
