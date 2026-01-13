@@ -9,9 +9,6 @@
 package io.runtime.mcumgr.ble;
 
 import android.annotation.SuppressLint;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGattService;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -22,7 +19,6 @@ import androidx.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
@@ -348,10 +344,14 @@ public class McuMgrBleTransport implements McuMgrTransport {
      * @param mtu The negotiated MTU size.
      */
     private void initializeGatt(int mtu) {
-        mChunkSize = mtu - 3; // 3 bytes for ATT header
-        mMaxPacketLength = Math.max(mChunkSize, mMaxPacketLength);
+        setMtu(mtu);
         mSmpProtocol = new SmpProtocolSession(mHandler);
         log(Log.INFO, "SMP transport initialized with MTU: " + mtu + ", chunk size: " + mChunkSize);
+    }
+
+    private void setMtu(int mtu) {
+        mChunkSize = mtu - 3; // 3 bytes for ATT header
+        mMaxPacketLength = Math.max(mChunkSize, mMaxPacketLength);
     }
 
     /**
@@ -411,7 +411,8 @@ public class McuMgrBleTransport implements McuMgrTransport {
      */
     public void didReconnect(int mtu) {
         log(Log.INFO, "didReconnect() - reinitializing protocol session");
-        initializeGatt(mtu);
+        setMtu(mtu);
+        log(Log.INFO, "SMP transport reconnected with MTU: " + mtu + ", chunk size: " + mChunkSize);
         notifyConnected();
     }
 
